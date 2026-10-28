@@ -1,16 +1,27 @@
 "use client";
 
 import { Wallet, Building2, Loader2 } from "lucide-react";
+import OverduePayrollAlertBanner from "@/components/features/payroll/OverduePayrollAlertBanner";
 import { useStellar } from "@/components/providers/StellarProvider";
 import { useWalletStore } from "@/stores/walletStore";
 import { useCompanyStore } from "@/stores/company";
 import WalletConnect from "@/components/features/wallet/WalletConnect";
 import PayrollSummary from "@/components/features/payroll/PayrollSummary";
+import PeriodSummaryCard from "@/components/features/payroll/PeriodSummaryCard";
 import SystemStatus from "@/components/features/dashboard/SystemStatus";
+import TreasuryBalanceSummaryCard from "@/components/features/dashboard/TreasuryBalanceSummaryCard";
+import TreasuryLiquidityReserveCard from "@/components/features/dashboard/TreasuryLiquidityReserveCard";
 import QuickActions from "@/components/features/dashboard/QuickActions";
 import OnboardingChecklistPanel from "@/components/features/dashboard/OnboardingChecklistPanel";
+import OnboardingReadinessTracker from "@/components/features/employees/OnboardingReadinessTracker";
 import PinnedAlertsPanel from "@/components/features/dashboard/PinnedAlertsPanel";
+import { SessionTimeoutBanner } from "@/components/features/dashboard/SessionTimeoutBanner";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import DashboardAssetAvailabilityCheck from "@/components/features/dashboard/DashboardAssetAvailabilityCheck";
+import PayoutScheduleCollisionPanel from "@/components/features/dashboard/PayoutScheduleCollisionPanel";
+import DashboardCompensationPolicyCheck from "@/components/features/dashboard/DashboardCompensationPolicyCheck";
+import DashboardEmployeeEligibilityStatusCheck from "@/components/features/dashboard/DashboardEmployeeEligibilityStatusCheck";
+import { MOCK_COMPANIES, MOCK_EMPLOYEES } from "@/lib/api/mockData";
 
 function DashboardHome() {
   const { isFreighterInstalled } = useStellar();
@@ -122,6 +133,10 @@ function DashboardHome() {
         <WalletConnect />
       </div>
       <ErrorBoundary>
+        <OverduePayrollAlertBanner />
+        <SessionTimeoutBanner />
+      </ErrorBoundary>
+      <ErrorBoundary>
         <PinnedAlertsPanel alerts={sampleAlerts} tasks={sampleTasks} />
       </ErrorBoundary>
       <ErrorBoundary>
@@ -131,7 +146,36 @@ function DashboardHome() {
         <OnboardingChecklistPanel />
       </ErrorBoundary>
       <ErrorBoundary>
+        <OnboardingReadinessTracker />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <TreasuryBalanceSummaryCard />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <TreasuryLiquidityReserveCard />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <DashboardAssetAvailabilityCheck
+          configuredAssets={MOCK_COMPANIES[0]?.treasury ? [{ code: "USDC" }, { code: "XLM" }] : []}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <PayoutScheduleCollisionPanel
+          templates={[]}
+          runs={[]}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <DashboardEmployeeEligibilityStatusCheck employees={MOCK_EMPLOYEES} />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <DashboardCompensationPolicyCheck />
+      </ErrorBoundary>
+      <ErrorBoundary>
         <SystemStatus />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <PeriodSummaryCard />
       </ErrorBoundary>
       <ErrorBoundary>
         <PayrollSummary />

@@ -20,12 +20,15 @@ import {
   Circle,
   CheckCircle2,
   XCircle,
+  RotateCcw,
 } from "lucide-react";
 import { useEmployeeStore } from "@/stores/employees";
 import { MOCK_EMPLOYEES, MOCK_PAYROLL_RUNS } from "@/lib/api/mockData";
 import type { Employee } from "@/types";
 import OnboardingBadge from "./OnboardingBadge";
 import EmptyState from "@/components/ui/EmptyState";
+import WalletChangeReviewCard from "@/components/review/WalletChangeReviewCard";
+import RecipientLockBadge from "./RecipientLockBadge";
 
 export interface EmployeeDetailDrawerProps {
   employee: Employee | null;
@@ -34,6 +37,8 @@ export interface EmployeeDetailDrawerProps {
 }
 
 export function EmployeeDetailDrawer({ employee, isOpen, onClose }: EmployeeDetailDrawerProps) {
+  const retryOnboarding = useEmployeeStore((s) => s.retryOnboarding);
+
   if (!isOpen || !employee) return null;
 
   return (
@@ -46,9 +51,16 @@ export function EmployeeDetailDrawer({ employee, isOpen, onClose }: EmployeeDeta
       />
       
       {/* Slide-over */}
-      <div className="fixed right-0 top-0 h-full w-full max-w-lg bg-white shadow-2xl z-[70] overflow-y-auto transform transition-transform duration-300 ease-in-out">
+      <div
+        className="fixed right-0 top-0 h-full w-full max-w-lg bg-white shadow-2xl z-[70] overflow-y-auto transform transition-transform duration-300 ease-in-out"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="employee-details-heading"
+      >
         <div className="sticky top-0 bg-white border-b border-gray-100 p-4 flex items-center justify-between z-10">
-          <h2 className="text-xl font-bold text-gray-900">Employee Details</h2>
+          <h2 id="employee-details-heading" className="text-xl font-bold text-gray-900">
+            Employee Details
+          </h2>
           <button
             onClick={onClose}
             className="p-2 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100 transition-colors"
@@ -72,9 +84,24 @@ export function EmployeeDetailDrawer({ employee, isOpen, onClose }: EmployeeDeta
             <div className="mt-4">
                <OnboardingBadge status={employee.onboardingStatus} />
             </div>
+            {employee.onboardingError && (
+              <div className="mt-4 w-full rounded-lg border border-amber-200 bg-amber-50 p-4 text-left">
+                <p className="text-sm font-medium text-amber-800">Onboarding retry available</p>
+                <p className="mt-1 text-xs text-amber-700">{employee.onboardingError}</p>
+                <button
+                  type="button"
+                  onClick={() => retryOnboarding(employee.id)}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                >
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                  Retry onboarding
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-8">
+            <WalletChangeReviewCard employeeId={employee.id} employeeName={employee.name} />
             {/* Professional Info */}
             <section>
               <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Professional Information</h4>
@@ -117,9 +144,12 @@ export function EmployeeDetailDrawer({ employee, isOpen, onClose }: EmployeeDeta
                   <div className="flex items-center gap-2 text-xs text-gray-500">
                     <Wallet className="w-3.5 h-3.5" /> Stellar Address
                   </div>
-                  <p className="text-xs font-mono break-all bg-gray-100 p-2 rounded text-gray-600">
-                    {employee.address}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-mono break-all bg-gray-100 p-2 rounded text-gray-600 flex-1">
+                      {employee.address}
+                    </p>
+                    <RecipientLockBadge employeeId={employee.id} employeeName={employee.name} />
+                  </div>
                 </div>
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center gap-2 text-xs text-gray-500">
@@ -206,6 +236,7 @@ function buildCommitmentHistory(employee: Employee): CommitmentEntry[] {
 export default function EmployeeDetail({ employeeId }: { employeeId: string }) {
   const router = useRouter();
   const { employees: storedEmployees, isLoading } = useEmployeeStore();
+  const retryOnboarding = useEmployeeStore((s) => s.retryOnboarding);
 
   const employees =
     storedEmployees.length > 0 ? storedEmployees : MOCK_EMPLOYEES;
@@ -303,6 +334,26 @@ export default function EmployeeDetail({ employeeId }: { employeeId: string }) {
             <StatusBadge status={status} showIcon={false} className="ml-auto px-3 py-1" />
           </div>
 
+          {employee.onboardingStatus !== "completed" && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-medium text-amber-800">
+                Onboarding retry available
+              </p>
+              <p className="mt-1 text-xs text-amber-700">
+                {employee.onboardingError ??
+                  "This employee can be re-queued after validation, wallet, or commitment issues."}
+              </p>
+              <button
+                type="button"
+                onClick={() => retryOnboarding(employee.id)}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+              >
+                <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                Retry onboarding
+              </button>
+            </div>
+          )}
+
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <div>
               <dt className="text-gray-500">Department</dt>
@@ -323,6 +374,7 @@ export default function EmployeeDetail({ employeeId }: { employeeId: string }) {
               </dd>
             </div>
           </dl>
+          <RecipientLockBadge employeeId={employee.id} employeeName={employee.name} variant="banner" />
         </div>
       </div>
 

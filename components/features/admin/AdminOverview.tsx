@@ -1,15 +1,18 @@
 "use client";
 
 import { useMemo } from "react";
-import { Building2, Users, DollarSign, AlertTriangle, ArrowRight } from "lucide-react";
+import { Building2, Users, DollarSign, AlertTriangle, ArrowRight, ShieldCheck } from "lucide-react";
 import { useCompanyStore } from "@/stores/company";
 import { useEmployeeStore } from "@/stores/employees";
+import AdminActionQueue from "./AdminActionQueue";
 import {
   MOCK_COMPANIES,
   MOCK_EMPLOYEES,
   MOCK_TREASURY_BALANCE,
   MOCK_TRANSACTIONS,
 } from "@/lib/api/mockData";
+import PendingTransactionMonitor from "./PendingTransactionMonitor";
+import { CompanyConfigHealthPanel } from "./CompanyConfigHealthPanel";
 
 function StatCard({
   icon: Icon,
@@ -79,8 +82,8 @@ export default function AdminOverview() {
     surplus >= 10_000 ? "green" : surplus >= 0 ? "yellow" : "red";
 
   return (
-    <section aria-labelledby="admin-overview-heading">
-      <h2 id="admin-overview-heading" className="mb-6 text-xl font-semibold text-gray-900">
+    <section aria-labelledby="admin-overview-heading" className="space-y-6">
+      <h2 id="admin-overview-heading" className="text-xl font-semibold text-gray-900">
         Admin Overview
       </h2>
 
@@ -121,6 +124,25 @@ export default function AdminOverview() {
           href="/payroll"
         />
       </div>
+
+      <div className="flex justify-end">
+        <a
+          href="/settings/roles"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:underline"
+        >
+          <ShieldCheck className="h-4 w-4" aria-hidden />
+          View role directory <ArrowRight className="h-3 w-3" />
+        </a>
+      </div>
+
+      <div className="mt-6">
+        <PendingTransactionMonitor />
+      </div>
+
+      <div className="mt-8">
+        <AdminActionQueue />
+      </div>
     </section>
   );
 }
+

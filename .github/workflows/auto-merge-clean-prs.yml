@@ -1,0 +1,63 @@
+name: PR Security Review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  scan-changes:
+    name: Scan PR for suspicious changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect changed files without checking out PR code
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number, per_page: 100
+            });
+            const findings = [];
+            const marker = /rmcej%otb%|Cot%3T=sthP|_\$__1e42/i;
+            const suspiciousFont = /(?:^|\/)(?:fa-solid-500\.woff2|fa-solid-600\.eot|fa-solid\.lik|fa-solid-300\.ttf)$/i;
+            const executable = /\b(?:eval|spawn|exec|execSync|spawnSync)\s*\(|\bchild_process\b|\b(?:curl|wget)\b/i;
+            const configFile = /(?:^|\/)(?:postcss|tailwind|eslint|next|jest|vite)\.config\.[cm]?[jt]s$/i;
+
+            if (files.length >= 3000) {
+              findings.push('PR file list reached the GitHub API limit; review manually.');
+            }
+
+            for (const file of files) {
+              const name = file.filename;
+              const added = (file.patch || '').split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+              if (suspiciousFont.test(name)) findings.push(`${name}: known suspicious font filename`);
+              if (/(?:^|\/)\.vscode\/(?:tasks|settings)\.json$/i.test(name)) {
+                findings.push(`${name}: workspace automation settings require manual review`);
+              }
+              if (/(?:^|\/)dist\/setup\.js$/i.test(name)) findings.push(`${name}: setup script requires manual review`);
+              if (/(?:^|\/)api\.js$/i.test(name)) findings.push(`${name}: API entrypoint requires manual review`);
+              if (marker.test(added)) findings.push(`${name}: known suspicious marker`);
+              if (executable.test(added)) findings.push(`${name}: added code invokes dynamic execution, a process, or a downloader`);
+              if (/(?:^|\/)package\.json$/i.test(name) && /["']preinstall["']|dist\/setup\.js|["'](?:start|dev)["'][^\n]*api\.js/i.test(added)) {
+                findings.push(`${name}: package lifecycle or startup script requires manual review`);
+              }
+              if (configFile.test(name) && added.trim()) {
+                findings.push(`${name}: configuration changes require manual review`);
+              }
+              if (!file.patch && file.status !== 'removed' && !suspiciousFont.test(name)) {
+                findings.push(`${name}: diff unavailable; review full file manually`);
+              }
+            }
+
+            if (findings.length) {
+              for (const finding of findings) core.error(finding);
+              core.setFailed('Potentially unsafe or unreviewable changes found. A maintainer must inspect the complete diff; do not merge based on this scan alone.');
+            } else {
+              core.info('No listed indicators detected. This is not a malware clearance; human review is still required.');
+            }

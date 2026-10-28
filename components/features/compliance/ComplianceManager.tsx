@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Key,
   Plus,
@@ -12,15 +12,23 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Download,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useViewKeyStore } from "@/stores/viewKeys";
 import { useAuditRequestStore } from "@/stores/auditRequests";
-import { MOCK_VIEW_KEYS, MOCK_AUDIT_REQUESTS } from "@/lib/api/mockData";
+import { useAuditActivityStore } from "@/stores/auditActivity";
+import { MOCK_VIEW_KEYS, MOCK_AUDIT_REQUESTS, MOCK_TRANSACTIONS } from "@/lib/api/mockData";
 import { HelpButton } from "@/components/ui/HelpDrawer";
 import AuditActivityFeed from "./AuditActivityFeed";
 import type { ViewKey } from "@/types";
 import AuditExportRequest from "./AuditExportRequest";
+import ComplianceEvidenceBundleView from "./ComplianceEvidenceBundleView";
+import AuditorAccessExpiryBadge from "./AuditorAccessExpiryBadge";
+import AuditReadyTimeline from "@/components/features/payroll/AuditReadyTimeline";
+import ComplianceHoldDialog from "./ComplianceHoldDialog";
+import AuditHoldReleaseDialog from "./AuditHoldReleaseDialog";
 import type { AuditAccessRequest } from "@/types/models";
 
 function generateKeyId(): string {
@@ -35,27 +43,60 @@ function generateKeyId(): string {
 function ComplianceManager() {
   const { viewKeys, addViewKey, revokeViewKey, setViewKeys } =
     useViewKeyStore();
-  const [activeTab, setActiveTab] = useState<"access" | "exports">("access");
-  const { requests, setRequests, approveRequest, rejectRequest } =
-    useAuditRequestStore();
-  const [initialized, setInitialized] = useState(false);
+  const [activeTab, setActiveTab] = useState<"access" | "exports" | "bundles" | "timeline" | "holds">("access");
+  const {
+    requests,
+    setRequests,
+    approveRequest,
+    rejectRequest,
+    revokeRequestByViewKey,
+    markExportReady,
+    addRequest,
+  } = useAuditRequestStore();
+  const { addActivity } = useAuditActivityStore();
+  
   const [showForm, setShowForm] = useState(false);
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({
     auditorName: "",
     auditorOrg: "",
     scope: "read-only" as "read-only" | "full-audit",
+    rationale: "",
+    requestedExpiresAt: "",
+    reviewerNotes: "",
   });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [preparingId, setPreparingId] = useState<string | null>(null);
 
-  if (!initialized && (viewKeys.length === 0 || requests.length === 0)) {
+  // Compliance holds state
+  const [holds, setHolds] = useState<
+    Array<{
+      id: string;
+      targetLabel: string;
+      reasonCode: string;
+      notes: string;
+      placedAt: string;
+      // #543 — release tracking
+      releasedAt?: string;
+      releaseNote?: string;
+    }>
+  >([]);
+  const [holdDialogOpen, setHoldDialogOpen] = useState(false);
+  const [releasingHoldId, setReleasingHoldId] = useState<string | null>(null);
+  const releasingHold = holds.find((h) => h.id === releasingHoldId) ?? null;
+
+  useEffect(() => {
     if (viewKeys.length === 0) setViewKeys(MOCK_VIEW_KEYS);
     if (requests.length === 0) setRequests(MOCK_AUDIT_REQUESTS);
-    setInitialized(true);
-  }
+  }, [viewKeys.length, requests.length, setViewKeys, setRequests]);
+
 
   const handleApproveRequest = (request: AuditAccessRequest) => {
     const keyId = generateKeyId();
+    const expiresAt = request.requestedExpiresAt
+      ? new Date(request.requestedExpiresAt).toISOString()
+      : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+
     const newKey: ViewKey = {
       id: `vk_${Date.now()}`,
       keyId,
@@ -64,11 +105,22 @@ function ComplianceManager() {
       scope: request.scope,
       grantedBy: "Current Admin",
       createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      expiresAt,
       isActive: true,
     };
     addViewKey(newKey);
     approveRequest(request.id, newKey.id);
+    addActivity({
+      id: `aud_act_${Date.now()}`,
+      action: "request_approved",
+      actor: "Current Admin",
+      actorOrg: "ZK Payroll Inc.",
+      targetName: request.requesterName,
+      targetOrg: request.requesterOrg,
+      scope: request.scope,
+      timestamp: new Date().toISOString(),
+      summary: `Audit access request from ${request.requesterName} (${request.requesterOrg}) approved. View key issued.`,
+    });
     toast.success("Request Approved", {
       description: `View key generated for ${request.requesterName}.`,
     });
@@ -76,25 +128,90 @@ function ComplianceManager() {
 
   const handleRejectRequest = (id: string) => {
     rejectRequest(id);
+    const req = requests.find((r) => r.id === id);
+    if (req) {
+      addActivity({
+        id: `aud_act_${Date.now()}`,
+        action: "request_rejected",
+        actor: "Current Admin",
+        actorOrg: "ZK Payroll Inc.",
+        targetName: req.requesterName,
+        targetOrg: req.requesterOrg,
+        scope: req.scope,
+        timestamp: new Date().toISOString(),
+        summary: `Audit access request from ${req.requesterName} (${req.requesterOrg}) rejected.`,
+      });
+    }
     toast.success("Request Rejected", {
       description: "The audit access request has been rejected.",
     });
   };
 
   const handleGenerate = () => {
+    const normalizedName = form.auditorName.trim();
+    const normalizedOrg = form.auditorOrg.trim();
+    const normalizedRationale = form.rationale.trim();
+    const normalizedReviewerNotes = form.reviewerNotes.trim();
+    const normalizedExpiration = form.requestedExpiresAt
+      ? new Date(`${form.requestedExpiresAt}T00:00:00.000Z`).toISOString()
+      : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+
+    if (!normalizedName || !normalizedOrg || !normalizedRationale || !form.requestedExpiresAt) {
+      return;
+    }
+
+    const keyId = generateKeyId();
     const newKey: ViewKey = {
       id: `vk_${Date.now()}`,
-      keyId: generateKeyId(),
-      auditorName: form.auditorName,
-      auditorOrg: form.auditorOrg,
+      keyId,
+      auditorName: normalizedName,
+      auditorOrg: normalizedOrg,
       scope: form.scope,
       grantedBy: "Current Admin",
       createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      expiresAt: normalizedExpiration,
       isActive: true,
     };
     addViewKey(newKey);
-    setForm({ auditorName: "", auditorOrg: "", scope: "read-only" });
+
+    // Create corresponding request to keep request tracking unified
+    const reqId = `req_${Date.now()}`;
+    const newRequest: AuditAccessRequest = {
+      id: reqId,
+      requesterName: normalizedName,
+      requesterOrg: normalizedOrg,
+      requesterEmail: `${normalizedName.toLowerCase().replace(/\s+/g, ".")}@${normalizedOrg.toLowerCase().replace(/\s+/g, "")}.com`,
+      scope: form.scope,
+      rationale: normalizedRationale,
+      reviewerNotes: normalizedReviewerNotes || undefined,
+      requestedExpiresAt: normalizedExpiration,
+      status: "approved",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      viewKeyId: newKey.id,
+    };
+    addRequest(newRequest);
+
+    addActivity({
+      id: `aud_act_${Date.now()}`,
+      action: "auditor_assigned",
+      actor: "Current Admin",
+      actorOrg: "ZK Payroll Inc.",
+      targetName: normalizedName,
+      targetOrg: normalizedOrg,
+      scope: form.scope,
+      timestamp: new Date().toISOString(),
+      summary: `Auditor assigned: access granted to ${normalizedName} (${normalizedOrg}).`,
+    });
+
+    setForm({
+      auditorName: "",
+      auditorOrg: "",
+      scope: "read-only",
+      rationale: "",
+      requestedExpiresAt: "",
+      reviewerNotes: "",
+    });
     setShowForm(false);
     toast.success("View key generated", {
       description: "Auditor access has been granted.",
@@ -103,8 +220,87 @@ function ComplianceManager() {
 
   const handleRevoke = (id: string) => {
     revokeViewKey(id);
+    revokeRequestByViewKey(id);
+    const key = viewKeys.find((k) => k.id === id);
+    if (key) {
+      addActivity({
+        id: `aud_act_${Date.now()}`,
+        action: "auditor_removed",
+        actor: "Current Admin",
+        actorOrg: "ZK Payroll Inc.",
+        targetName: key.auditorName,
+        targetOrg: key.auditorOrg,
+        scope: key.scope,
+        timestamp: new Date().toISOString(),
+        summary: `Auditor removed: access for ${key.auditorName} (${key.auditorOrg}) was immediately revoked.`,
+      });
+    }
     toast.success("View key revoked", {
       description: "Auditor access has been immediately revoked.",
+    });
+  };
+
+  const handlePlaceHold = async ({
+    reasonCode,
+    notes,
+  }: {
+    reasonCode: string;
+    notes: string;
+  }) => {
+    const hold = {
+      id: `hold_${Date.now()}`,
+      targetLabel: "Current Compliance Period",
+      reasonCode,
+      notes,
+      placedAt: new Date().toISOString(),
+    };
+    setHolds((prev) => [hold, ...prev]);
+    addActivity({
+      id: `aud_act_${Date.now()}`,
+      action: "export_prepared", // closest available action type
+      actor: "Current Admin",
+      actorOrg: "ZK Payroll Inc.",
+      targetName: "Compliance Hold",
+      targetOrg: "—",
+      scope: "read-only",
+      timestamp: hold.placedAt,
+      summary: `Compliance hold placed: ${reasonCode}${notes ? ` — ${notes}` : ""}`,
+    });
+    setHoldDialogOpen(false);
+    toast.success("Hold placed", {
+      description: `Compliance hold recorded with reason: ${reasonCode}.`,
+    });
+  };
+
+  const handleReleaseHold = async ({
+    holdId,
+    releaseNote,
+  }: {
+    holdId: string;
+    releaseNote: string;
+  }) => {
+    const hold = holds.find((h) => h.id === holdId);
+    if (!hold) throw new Error("This hold no longer exists. Refresh and try again.");
+    if (hold.releasedAt) throw new Error("This hold has already been released.");
+
+    const releasedAt = new Date().toISOString();
+    setHolds((prev) =>
+      prev.map((h) => (h.id === holdId ? { ...h, releasedAt, releaseNote } : h)),
+    );
+    addActivity({
+      id: `aud_act_${Date.now()}`,
+      action: "export_prepared", // closest available action type
+      actor: "Current Admin",
+      actorOrg: "ZK Payroll Inc.",
+      targetName: "Compliance Hold",
+      targetOrg: "—",
+      scope: "read-only",
+      timestamp: releasedAt,
+      summary: `Compliance hold released: ${hold.reasonCode} — ${releaseNote}`,
+    });
+    setReleasingHoldId(null);
+    toast.success("Hold released", {
+      description: `Compliance hold ${hold.reasonCode} released and recorded in the audit trail.`,
     });
   };
 
@@ -129,8 +325,119 @@ function ComplianceManager() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const activeKeys = viewKeys.filter((k) => k.isActive);
-  const inactiveKeys = viewKeys.filter((k) => !k.isActive);
+  const handlePrepareExport = (id: string) => {
+    setPreparingId(id);
+    setTimeout(() => {
+      markExportReady(id);
+      setPreparingId(null);
+      
+      const req = requests.find((r) => r.id === id);
+      if (req) {
+        addActivity({
+          id: `aud_act_${Date.now()}`,
+          action: "export_prepared",
+          actor: "Current Admin",
+          actorOrg: "ZK Payroll Inc.",
+          targetName: req.requesterName,
+          targetOrg: req.requesterOrg,
+          scope: req.scope,
+          timestamp: new Date().toISOString(),
+          summary: `Audit export compiled and ready for ${req.requesterName} (${req.requesterOrg}).`,
+        });
+        toast.success("Audit Export Prepared", {
+          description: `The audit export for ${req.requesterName} is now ready to download.`,
+        });
+      }
+    }, 1200);
+  };
+
+  const handleDownloadExport = (req: AuditAccessRequest) => {
+    const toCsvRow = (values: Array<string | number | null | undefined>) => {
+      return values
+        .map((value) => {
+          const text = value == null ? "" : String(value);
+          return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+        })
+        .join(",");
+    };
+
+    const downloadCsv = (filename: string, rows: Array<Array<string | number | null | undefined>>) => {
+      const csv = rows.map(toCsvRow).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    };
+
+    if (req.scope === "full-audit") {
+      downloadCsv(`audit-export-${req.requesterOrg.toLowerCase()}-full.csv`, [
+        ["Transaction ID", "Date", "Status", "Total Amount", "Employee Count", "Department Breakdown", "Verification Proof Hash"],
+        ...MOCK_TRANSACTIONS.map((tx) => [
+          tx.id,
+          new Date(tx.createdAt).toISOString().slice(0, 10),
+          tx.status,
+          tx.totalAmount,
+          tx.employeeCount,
+          "Engineering: 40%, Marketing: 25%, Operations: 20%, Sales: 15%",
+          tx.txHash ?? "0x7f8d8b8e8f8...zkProof",
+        ]),
+      ]);
+    } else {
+      downloadCsv(`audit-export-${req.requesterOrg.toLowerCase()}-summary.csv`, [
+        ["Transaction ID", "Date", "Status", "Total Amount", "Employee Count"],
+        ...MOCK_TRANSACTIONS.map((tx) => [
+          tx.id,
+          new Date(tx.createdAt).toISOString().slice(0, 10),
+          tx.status,
+          tx.totalAmount,
+          tx.employeeCount,
+        ]),
+      ]);
+    }
+
+    addActivity({
+      id: `aud_act_${Date.now()}`,
+      action: "export_downloaded",
+      actor: "Current Admin",
+      actorOrg: "ZK Payroll Inc.",
+      targetName: req.requesterName,
+      targetOrg: req.requesterOrg,
+      scope: req.scope,
+      timestamp: new Date().toISOString(),
+      summary: `Audit export downloaded by ${req.requesterName} (${req.requesterOrg}).`,
+    });
+
+    toast.success("Audit Export Downloaded", {
+      description: `CSV file for ${req.requesterName} has been downloaded.`,
+    });
+  };
+
+  const isKeyExpired = (key: ViewKey) => {
+    return new Date(key.expiresAt).getTime() < Date.now();
+  };
+
+  const getRequestStatus = (req: AuditAccessRequest) => {
+    if (req.status === "pending" || req.status === "rejected") {
+      return req.status;
+    }
+    const key = viewKeys.find(
+      (k) => k.id === req.viewKeyId || k.keyId === req.viewKeyId
+    );
+    if (!key) return req.status;
+    if (key.revokedAt || !key.isActive) {
+      return "revoked";
+    }
+    if (isKeyExpired(key)) {
+      return "expired";
+    }
+    return req.status; // approved or export_ready
+  };
+
+  const activeKeys = viewKeys.filter((k) => k.isActive && !isKeyExpired(k));
+  const inactiveKeys = viewKeys.filter((k) => !k.isActive || isKeyExpired(k));
   const pendingRequests = requests.filter((r) => r.status === "pending");
 
   return (
@@ -157,10 +464,24 @@ function ComplianceManager() {
       <div className="flex border-b border-gray-200">
         <button
           type="button"
+          onClick={() => setActiveTab("bundles")}
+          className={`px-6 py-3 text-sm font-medium transition-colors relative ${
+            activeTab === "bundles"
+              ? "text-indigo-600 font-semibold"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Evidence Bundles
+          {activeTab === "bundles" && (
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 animate-in fade-in slide-in-from-bottom-1" />
+          )}
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab("access")}
           className={`px-6 py-3 text-sm font-medium transition-colors relative ${
             activeTab === "access"
-              ? "text-indigo-600"
+              ? "text-indigo-600 font-semibold"
               : "text-gray-500 hover:text-gray-700"
           }`}
         >
@@ -174,12 +495,40 @@ function ComplianceManager() {
           onClick={() => setActiveTab("exports")}
           className={`px-6 py-3 text-sm font-medium transition-colors relative ${
             activeTab === "exports"
-              ? "text-indigo-600"
+              ? "text-indigo-600 font-semibold"
               : "text-gray-500 hover:text-gray-700"
           }`}
         >
           Audit Exports
           {activeTab === "exports" && (
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 animate-in fade-in slide-in-from-bottom-1" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("timeline")}
+          className={`px-6 py-3 text-sm font-medium transition-colors relative ${
+            activeTab === "timeline"
+              ? "text-indigo-600 font-semibold"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Audit Timeline
+          {activeTab === "timeline" && (
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 animate-in fade-in slide-in-from-bottom-1" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("holds")}
+          className={`px-6 py-3 text-sm font-medium transition-colors relative ${
+            activeTab === "holds"
+              ? "text-indigo-600 font-semibold"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Holds
+          {activeTab === "holds" && (
             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 animate-in fade-in slide-in-from-bottom-1" />
           )}
         </button>
@@ -228,7 +577,7 @@ function ComplianceManager() {
               <h3 className="text-sm font-semibold text-gray-900">
                 New Auditor View Key
               </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label
                     htmlFor="auditor-name"
@@ -287,12 +636,74 @@ function ComplianceManager() {
                     <option value="full-audit">Full Audit</option>
                   </select>
                 </div>
+                <div>
+                  <label
+                    htmlFor="requested-expiration"
+                    className="block text-xs font-medium text-gray-600 mb-1"
+                  >
+                    Requested Expiration
+                  </label>
+                  <input
+                    id="requested-expiration"
+                    type="date"
+                    min={new Date().toISOString().slice(0, 10)}
+                    value={form.requestedExpiresAt}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, requestedExpiresAt: e.target.value }))
+                    }
+                    className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  />
+                </div>
               </div>
+
+              <div>
+                <label
+                  htmlFor="audit-request-reason"
+                  className="block text-xs font-medium text-gray-600 mb-1"
+                >
+                  Request Reason
+                </label>
+                <textarea
+                  id="audit-request-reason"
+                  value={form.rationale}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, rationale: e.target.value }))
+                  }
+                  rows={3}
+                  placeholder="Describe why this auditor needs payroll access."
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="reviewer-notes"
+                  className="block text-xs font-medium text-gray-600 mb-1"
+                >
+                  Reviewer Notes
+                </label>
+                <textarea
+                  id="reviewer-notes"
+                  value={form.reviewerNotes}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, reviewerNotes: e.target.value }))
+                  }
+                  rows={2}
+                  placeholder="Add any reviewer conditions or approvals."
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={handleGenerate}
-                  disabled={!form.auditorName || !form.auditorOrg}
+                  disabled={
+                    !form.auditorName ||
+                    !form.auditorOrg ||
+                    !form.rationale.trim() ||
+                    !form.requestedExpiresAt
+                  }
                   className="px-4 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
                 >
                   Generate
@@ -332,6 +743,14 @@ function ComplianceManager() {
                         </span>
                       </div>
                       <p className="text-sm text-gray-600 mt-1">{req.rationale}</p>
+                      {req.requestedExpiresAt && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Requested expiry: {new Date(req.requestedExpiresAt).toLocaleDateString()}
+                        </p>
+                      )}
+                      {req.reviewerNotes && (
+                        <p className="text-xs text-gray-500 mt-1">Reviewer notes: {req.reviewerNotes}</p>
+                      )}
                       <div className="flex items-center gap-3 mt-1">
                         <span className="text-xs text-gray-500">
                           Requested {new Date(req.createdAt).toLocaleDateString()}
@@ -391,7 +810,7 @@ function ComplianceManager() {
             <div className="pt-6">
               <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
                 <XCircle className="w-3.5 h-3.5 text-gray-400" />
-                Revoked Keys ({inactiveKeys.length})
+                Inactive Keys ({inactiveKeys.length})
               </h4>
               <div className="bg-white rounded-lg border divide-y opacity-75">
                 {inactiveKeys.map((key) => (
@@ -409,10 +828,183 @@ function ComplianceManager() {
             </div>
           )}
 
+          {/* Access Request Tracking Section */}
+          <div className="pt-6 border-t border-gray-200">
+            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <Clock className="w-3.5 h-3.5 text-gray-400" />
+              Access Request Tracking
+            </h4>
+            {requests.length === 0 ? (
+              <div className="bg-white rounded-lg border p-6 text-center text-sm text-gray-500">
+                No access requests on record.
+              </div>
+            ) : (
+              <div className="bg-white rounded-lg border overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Requester
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Scope
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Status
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Requested On
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {requests.map((req) => {
+                        const currentStatus = getRequestStatus(req);
+                        return (
+                          <tr key={req.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="flex flex-col">
+                                <span className="text-sm font-semibold text-gray-900">
+                                  {req.requesterName}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {req.requesterOrg} &middot; {req.requesterEmail}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ${
+                                  req.scope === "full-audit"
+                                    ? "bg-purple-100 text-purple-800"
+                                    : "bg-blue-100 text-blue-800"
+                                }`}
+                              >
+                                {req.scope === "full-audit" ? "Full Audit" : "Read-only"}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <StatusBadge status={currentStatus} />
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-500">
+                              {new Date(req.createdAt).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <RequestActions
+                                request={req}
+                                status={currentStatus}
+                                onPrepareExport={handlePrepareExport}
+                                onDownloadExport={handleDownloadExport}
+                                preparingId={preparingId}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+
           <AuditActivityFeed />
         </div>
-      ) : (
+      ) : activeTab === "exports" ? (
         <AuditExportRequest />
+      ) : activeTab === "timeline" ? (
+        <AuditReadyTimeline />
+      ) : activeTab === "holds" ? (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">
+                Compliance Holds
+              </h3>
+              <p className="text-xs text-gray-500 mt-1">
+                Structured hold reasons are attached to each hold action to support
+                auditability. Salary amounts and employee identifiers are never recorded here.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHoldDialogOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+            >
+              Place Hold
+            </button>
+          </div>
+
+          {holds.length === 0 ? (
+            <div className="bg-white rounded-lg border p-8 text-center">
+              <p className="text-sm text-gray-500">No compliance holds have been placed.</p>
+              <p className="text-xs text-gray-400 mt-1">
+                Use the &quot;Place Hold&quot; button to record a structured hold with a reason code.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg border divide-y">
+              {holds.map((hold) => (
+                <div key={hold.id} className="px-6 py-4 flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                        {hold.reasonCode}
+                      </span>
+                      <span className="text-sm font-medium text-gray-900">{hold.targetLabel}</span>
+                    </div>
+                    {hold.notes && (
+                      <p className="text-xs text-gray-600 mt-1">{hold.notes}</p>
+                    )}
+                    <p className="text-xs text-gray-400 mt-1">
+                      Placed {new Date(hold.placedAt).toLocaleString()}
+                    </p>
+                    {hold.releasedAt && (
+                      <p className="text-xs text-green-700 mt-1">
+                        Released {new Date(hold.releasedAt).toLocaleString()}
+                        {hold.releaseNote ? ` — ${hold.releaseNote}` : ""}
+                      </p>
+                    )}
+                  </div>
+                  {hold.releasedAt ? (
+                    <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-50 text-green-700 border border-green-200">
+                      Released
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setReleasingHoldId(hold.id)}
+                      className="shrink-0 px-3 py-1.5 text-xs font-medium text-green-700 border border-green-300 rounded-lg hover:bg-green-50 transition-colors"
+                      aria-label={`Release hold ${hold.reasonCode}`}
+                    >
+                      Release
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <ComplianceHoldDialog
+            isOpen={holdDialogOpen}
+            targetLabel="Current Compliance Period"
+            onClose={() => setHoldDialogOpen(false)}
+            onSubmit={handlePlaceHold}
+          />
+
+          <AuditHoldReleaseDialog
+            isOpen={releasingHold !== null}
+            hold={releasingHold}
+            onClose={() => setReleasingHoldId(null)}
+            onConfirm={handleReleaseHold}
+          />
+        </div>
+      ) : (
+        <ComplianceEvidenceBundleView />
       )}
     </section>
   );
@@ -434,7 +1026,8 @@ function ViewKeyRow({
   onRevoke: () => void;
 }) {
   const isExpired =
-    !viewKey.isActive && !viewKey.revokedAt;
+    (!viewKey.isActive && !viewKey.revokedAt) ||
+    new Date(viewKey.expiresAt).getTime() < Date.now();
   const displayKey = isRevealed
     ? viewKey.keyId
     : viewKey.keyId.slice(0, 6) + "****";
@@ -488,6 +1081,7 @@ function ViewKeyRow({
             <Clock className="w-3 h-3" />
             Expires {new Date(viewKey.expiresAt).toLocaleDateString()}
           </span>
+          <AuditorAccessExpiryBadge viewKey={viewKey} />
           {viewKey.revokedAt && (
             <span className="text-xs text-red-500">
               Revoked {new Date(viewKey.revokedAt).toLocaleDateString()}
@@ -507,6 +1101,75 @@ function ViewKeyRow({
       )}
     </div>
   );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const configs: Record<string, { bg: string; label: string }> = {
+    pending: { bg: "bg-amber-100 text-amber-800 border border-amber-200", label: "Pending Review" },
+    approved: { bg: "bg-blue-100 text-blue-800 border border-blue-200", label: "Approved" },
+    rejected: { bg: "bg-red-100 text-red-800 border border-red-200", label: "Rejected" },
+    expired: { bg: "bg-gray-100 text-gray-800 border border-gray-200", label: "Expired" },
+    revoked: { bg: "bg-red-100 text-red-800 border border-red-200", label: "Revoked" },
+    export_ready: { bg: "bg-green-100 text-green-800 border border-green-200", label: "Export Ready" },
+  };
+
+  const config = configs[status] || { bg: "bg-gray-100 text-gray-800 border border-gray-200", label: status };
+
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.bg}`}>
+      {config.label}
+    </span>
+  );
+}
+
+function RequestActions({
+  request,
+  status,
+  onPrepareExport,
+  onDownloadExport,
+  preparingId,
+}: {
+  request: AuditAccessRequest;
+  status: string;
+  onPrepareExport: (id: string) => void;
+  onDownloadExport: (req: AuditAccessRequest) => void;
+  preparingId: string | null;
+}) {
+  if (status === "approved") {
+    const isPreparing = preparingId === request.id;
+    return (
+      <button
+        type="button"
+        disabled={isPreparing}
+        onClick={() => onPrepareExport(request.id)}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition-colors disabled:opacity-50"
+      >
+        {isPreparing ? (
+          <>
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Preparing...
+          </>
+        ) : (
+          "Prepare Export"
+        )}
+      </button>
+    );
+  }
+
+  if (status === "export_ready") {
+    return (
+      <button
+        type="button"
+        onClick={() => onDownloadExport(request)}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 transition-colors"
+      >
+        <Download className="w-3 h-3" />
+        Download Export
+      </button>
+    );
+  }
+
+  return <span className="text-xs text-gray-400">—</span>;
 }
 
 export default ComplianceManager;

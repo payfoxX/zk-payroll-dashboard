@@ -21,6 +21,30 @@ describe("TransactionHistory & Reconciliation Flow", () => {
     expect(screen.getAllByText("Payout").length).toBeGreaterThan(0);
   });
 
+  it("renders namespaced reconciliation badges and filters by outcome", () => {
+    render(<TransactionHistory />);
+
+    expect(
+      screen.getByRole("columnheader", { name: /reconciliation/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("status", { name: "Reconciliation: Matched" }),
+    ).toHaveLength(2);
+    expect(
+      screen.getAllByRole("status", { name: "Reconciliation: Pending" }),
+    ).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+    fireEvent.change(screen.getByLabelText("Reconciliation"), {
+      target: { value: "mismatched" },
+    });
+
+    expect(screen.getByText(/Showing 1 of 3 transactions/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("status", { name: "Reconciliation: Mismatched" }),
+    ).toHaveLength(2);
+  });
+
   it("filters transactions by status", async () => {
     render(<TransactionHistory />);
 
@@ -28,7 +52,7 @@ describe("TransactionHistory & Reconciliation Flow", () => {
     const filterToggle = screen.getByRole("button", { name: /filter/i });
     fireEvent.click(filterToggle);
 
-    const statusSelect = screen.getByLabelText(/status/i);
+    const statusSelect = screen.getByRole("combobox", { name: /^status$/i });
     expect(statusSelect).toBeInTheDocument();
 
     // Change status filter to 'pending'
@@ -79,7 +103,7 @@ describe("TransactionHistory & Reconciliation Flow", () => {
     // Apply a filter first
     const filterToggle = screen.getByRole("button", { name: /filter/i });
     fireEvent.click(filterToggle);
-    const statusSelect = screen.getByLabelText(/status/i);
+    const statusSelect = screen.getByRole("combobox", { name: /^status$/i });
     fireEvent.change(statusSelect, { target: { value: "pending" } });
 
     // Click "Save as view"
@@ -181,8 +205,16 @@ describe("TransactionHistory – archived mode", () => {
     render(<TransactionHistory mode="archived" />);
 
     expect(screen.getByText("Archived Payrolls")).toBeInTheDocument();
-    // tx_002 is the only archived record
-    expect(screen.getByText(/Showing 1 of 1 archived payrolls/i)).toBeInTheDocument();
+    // tx_002 and tx_005 are archived records
+    expect(screen.getByText(/Showing 2 of 2 archived payrolls/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("status", {
+        name: "Reconciliation: Manually reviewed",
+      }),
+    ).toHaveLength(2);
+    expect(
+      screen.getAllByRole("status", { name: "Reconciliation: Failed" }),
+    ).toHaveLength(2);
   });
 
   it("shows the archived-specific empty state when filters yield no results", async () => {

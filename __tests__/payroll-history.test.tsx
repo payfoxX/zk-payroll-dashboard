@@ -1,0 +1,218 @@
+import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent, within } from "@testing-library/react";
+import PayrollHistory from "@/components/features/payroll/PayrollHistory";
+import { MOCK_PAYROLL_RUNS } from "@/lib/api/mockData";
+
+describe("PayrollHistory", () => {
+  it("renders the calendar heading inside the payroll calendar", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    expect(screen.getByText("Payroll Schedule")).toBeInTheDocument();
+  });
+
+  it("renders a search input with the expected placeholder", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    expect(
+      screen.getByPlaceholderText(/search run id, period, tx hash, status/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the filter toggle button", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    expect(screen.getByRole("button", { name: /filter/i })).toBeInTheDocument();
+  });
+
+  it("saves and applies a named view with its sort settings", () => {
+    window.localStorage.clear();
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+    fireEvent.change(screen.getByLabelText("Status"), {
+      target: { value: "failed" },
+    });
+    fireEvent.change(screen.getByLabelText("Sort by"), {
+      target: { value: "status" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save view/i }));
+    fireEvent.change(screen.getByLabelText("View name"), {
+      target: { value: "Failed payroll" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: /saved views/i }));
+    expect(screen.getByText("Failed payroll")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Failed payroll" }));
+
+    expect(screen.getByLabelText("Status")).toHaveValue("failed");
+    expect(screen.getByLabelText("Sort by")).toHaveValue("status");
+  });
+
+  it("shows an actionable error for a blank saved-view name", () => {
+    window.localStorage.clear();
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /save view/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Enter a name for this view.",
+    );
+  });
+
+  it("rejects duplicate names when renaming a saved view", () => {
+    window.localStorage.clear();
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /save view/i }));
+    fireEvent.change(screen.getByLabelText("View name"), {
+      target: { value: "Alpha" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: /save view/i }));
+    fireEvent.change(screen.getByLabelText("View name"), {
+      target: { value: "Beta" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: /saved views/i }));
+    fireEvent.click(screen.getByRole("button", { name: /rename beta/i }));
+
+    const renameInput = screen.getByRole("textbox", { name: /rename beta/i });
+    fireEvent.change(renameInput, { target: { value: "Alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: /save view name/i }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "A saved view with this name already exists.",
+    );
+  });
+
+  it("shows the filter panel when the filter button is clicked", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+
+    expect(screen.getByLabelText("Status")).toBeInTheDocument();
+    expect(screen.getByLabelText("Transaction Outcome")).toBeInTheDocument();
+    expect(screen.getByLabelText("From")).toBeInTheDocument();
+    expect(screen.getByLabelText("To")).toBeInTheDocument();
+  });
+
+  it("hides the filter panel when the filter button is clicked again", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    const filterButton = screen.getByRole("button", { name: /filter/i });
+    fireEvent.click(filterButton);
+    expect(screen.getByLabelText("Status")).toBeInTheDocument();
+
+    fireEvent.click(filterButton);
+    expect(screen.queryByLabelText("Status")).not.toBeInTheDocument();
+  });
+
+  it("filters runs by normalized reconciliation outcome", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+    fireEvent.change(screen.getByLabelText("Transaction Outcome"), {
+      target: { value: "matched" },
+    });
+
+    expect(screen.getAllByText(/Feb 28, 2025/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Mar 31, 2025/)).not.toBeInTheDocument();
+    expect(screen.getByText(/1 filter active/i)).toBeInTheDocument();
+  });
+
+  it("shows the active filter indicator when a status filter is applied", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+
+    const statusSelect = screen.getByLabelText("Status");
+    fireEvent.change(statusSelect, { target: { value: "verified" } });
+
+    expect(screen.getByText(/1 filter active/i)).toBeInTheDocument();
+  });
+
+  it("narrows results when a search query is typed", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    const searchInput = screen.getByPlaceholderText(
+      /search run id, period, tx hash, status/i,
+    );
+    fireEvent.change(searchInput, { target: { value: "cancelled" } });
+
+    expect(screen.getByText("Payroll Schedule")).toBeInTheDocument();
+  });
+
+  it("shows an active filter count badge on the filter button", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    const searchInput = screen.getByPlaceholderText(
+      /search run id, period, tx hash, status/i,
+    );
+    fireEvent.change(searchInput, { target: { value: "verified" } });
+
+    const filterBtn = screen.getByRole("button", {
+      name: (name) => name.startsWith("Filter"),
+    });
+    expect(within(filterBtn).getByText("1")).toBeInTheDocument();
+  });
+
+  it("shows a clear button when filters are active and clears them on click", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    const searchInput = screen.getByPlaceholderText(
+      /search run id, period, tx hash, status/i,
+    );
+    fireEvent.change(searchInput, { target: { value: "verified" } });
+
+    const clearButton = screen.getByRole("button", {
+      name: /clear all filters/i,
+    });
+    expect(clearButton).toBeInTheDocument();
+
+    fireEvent.click(clearButton);
+    expect(searchInput).toHaveValue("");
+  });
+
+  it("shows the filter indicator bar when filters are active", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    const searchInput = screen.getByPlaceholderText(
+      /search run id, period, tx hash, status/i,
+    );
+    fireEvent.change(searchInput, { target: { value: "verified" } });
+
+    expect(screen.getByText(/1 filter active/i)).toBeInTheDocument();
+  });
+
+  it("displays the filtered-empty state (not the never-had-any-runs state) when no runs match the applied filters", () => {
+    // #365 — this used to fall through to PayrollCalendar's "No payroll
+    // runs yet" copy, which is misleading when the account has runs and
+    // only the current filter excludes all of them.
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    const searchInput = screen.getByPlaceholderText(
+      /search run id, period, tx hash, status/i,
+    );
+    fireEvent.change(searchInput, {
+      target: { value: "nonexistent_run_id_xyz" },
+    });
+
+    expect(
+      screen.getByText("No payroll runs match your search"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No payroll runs yet")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^clear all filters$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the PayrollCalendar and its content inside the history view", () => {
+    render(<PayrollHistory runs={MOCK_PAYROLL_RUNS} />);
+
+    expect(screen.getByText("Past payroll runs")).toBeInTheDocument();
+  });
+});

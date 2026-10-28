@@ -1,10 +1,10 @@
 import DashboardLayout from "@/components/layout/DashboardLayout";
-import PayrollCalendar from "@/components/features/payroll/PayrollCalendar";
+import PayrollScheduleCollisionDetector from "@/components/features/payroll/PayrollScheduleCollisionDetector";
 
 function PayrollSchedulePage() {
   return (
     <DashboardLayout>
-      <PayrollCalendar />
+      <PayrollScheduleCollisionDetector />
     </DashboardLayout>
   );
 }

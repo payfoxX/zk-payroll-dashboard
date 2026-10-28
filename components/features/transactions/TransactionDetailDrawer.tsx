@@ -26,6 +26,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import Badge from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { PayrollTransaction } from "@/types";
+import { formatPeriodLabel } from "@/lib/date/periodLabel";
 
 interface TransactionDetailDrawerProps {
   transaction: PayrollTransaction | null;
@@ -123,11 +124,13 @@ function TransactionDetailDrawer({
         year: "numeric",
         month: "long",
         day: "numeric",
+        timeZone: "UTC",
       }),
       time: date.toLocaleTimeString("en-US", {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
+        timeZone: "UTC",
       }),
     };
   };
@@ -193,13 +196,19 @@ function TransactionDetailDrawer({
               </div>
             </section>
 
-            {/* Timestamps */}
+            {/* Timestamps & Period */}
             <section>
               <h4 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
                 <Calendar className="w-4 h-4" aria-hidden="true" />
-                Timeline
+                Timeline &amp; Period
               </h4>
               <div className="space-y-3">
+                <div className="p-3 border border-gray-200 rounded-lg">
+                  <div className="text-xs text-gray-500 mb-1">Pay Period</div>
+                  <div className="text-sm font-medium text-gray-900">
+                    {formatPeriodLabel(transaction)}
+                  </div>
+                </div>
                 <div className="p-3 border border-gray-200 rounded-lg">
                   <div className="text-xs text-gray-500 mb-1">Created</div>
                   <div className="text-sm font-medium text-gray-900">

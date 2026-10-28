@@ -11,6 +11,7 @@ import {
   History,
   Archive,
   Shield,
+  ShieldCheck,
   Play,
   Building2,
   Landmark,
@@ -21,11 +22,15 @@ import {
   AlertTriangle,
   ClipboardList,
   Upload,
-  FileDown
+  FileDown,
+  Gavel,
+  Scale
 } from "lucide-react";
-import { getNavigationForRole, ROLE_LABELS } from "@/lib/auth/roles";
+import { getNavigationForRole, ROLE_LABELS, NAVIGATION_ITEMS } from "@/lib/auth/roles";
 import type { NavigationItem } from "@/lib/auth/roles";
 import type { UserRole } from "@/types";
+import { useSidebarBadges } from "@/hooks/useSidebarBadges";
+import type { SidebarBadges } from "@/hooks/useSidebarBadges";
 
 // Icons map for role-based navigation layout strings
 const icons: Record<NavigationItem["icon"], React.ComponentType<{ className?: string }>> = {
@@ -44,34 +49,61 @@ const icons: Record<NavigationItem["icon"], React.ComponentType<{ className?: st
   clipboard: ClipboardList,
   upload: Upload,
   download: FileDown,
+  gavel: Gavel,
 };
 
-// Global static layout links array including both branches' additions
-const NAV_LINKS = [
-  { href: "/", icon: Home, label: "Dashboard" },
-  { href: "/employees", icon: Users, label: "Employees" },
-  { href: "/payroll/schedule", icon: CalendarDays, label: "Payroll Schedule" },
-  { href: "/payroll/execute", icon: Play, label: "Execute Payroll" },
-  { href: "/history", icon: History, label: "History" },
-  { href: "/history/archived", icon: Archive, label: "Archived Payrolls" },
-  { href: "/exports", icon: FileDown, label: "Exports" },
-  { href: "/treasury", icon: Landmark, label: "Treasury" },
-  { href: "/compliance", icon: Shield, label: "Compliance" },
-  { href: "/setup", icon: Building2, label: "Company Setup" },
-  { href: "/incidents", icon: AlertTriangle, label: "Incidents" },
-  { href: "/settings", icon: Settings, label: "Settings" },
-];
+const BADGE_HREF_MAP: Partial<Record<keyof SidebarBadges, string>> = {
+  executePayroll: "/payroll/execute",
+  compliance: "/compliance",
+  employees: "/employees",
+};
 
-function NavLinks({ onClick }: { onClick?: () => void }) {
+function SidebarBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center leading-none"
+      aria-label={`${count} item${count === 1 ? "" : "s"} require attention`}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+// Removed static NAV_LINKS, using dynamic navigation based on role
+
+function NavLinks({ onClick, badges, role }: { onClick?: () => void; badges?: SidebarBadges; role?: UserRole }) {
   const pathname = usePathname() ?? "/";
+  // If role is undefined, fallback to all NAVIGATION_ITEMS for tests and default state
+  const items = role ? getNavigationForRole(role) : NAVIGATION_ITEMS;
+
   return (
     <nav aria-label="Main navigation" className="mt-6">
-      {NAV_LINKS.map(({ href, icon: Icon, label }) => {
-        const active = pathname === href || (href !== "/" && pathname.startsWith(href));
+      {items.map((item) => {
+        const Icon = icons[item.icon] || Home;
+        const disabled = role ? item.access?.[role] === "disabled" : false;
+        const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+        const badgeKey = Object.entries(BADGE_HREF_MAP).find(([, h]) => h === item.href)?.[0] as keyof SidebarBadges | undefined;
+        const count = badgeKey && badges ? badges[badgeKey] : 0;
+        
+        if (disabled) {
+          return (
+            <span
+              key={item.href}
+              className="flex items-center px-6 py-3 text-gray-400 cursor-not-allowed"
+              aria-disabled="true"
+              title={role ? item.disabledReason?.[role] : undefined}
+            >
+              <Icon className="w-5 h-5 mr-3" aria-hidden="true" />
+              {item.label}
+            </span>
+          );
+        }
+
         return (
           <a
-            key={href}
-            href={href}
+            key={item.href}
+            href={item.href}
             onClick={onClick}
             aria-current={active ? "page" : undefined}
             className={`flex items-center px-6 py-3 hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${
@@ -79,7 +111,8 @@ function NavLinks({ onClick }: { onClick?: () => void }) {
             }`}
           >
             <Icon className="w-5 h-5 mr-3" aria-hidden="true" />
-            {label}
+            {item.label}
+            <SidebarBadge count={count} />
           </a>
         );
       })}
@@ -90,6 +123,7 @@ function NavLinks({ onClick }: { onClick?: () => void }) {
 export function DesktopRoleSidebar({ role }: { role: UserRole }) {
   const pathname = usePathname();
   const items = getNavigationForRole(role);
+  const badges = useSidebarBadges();
 
   return (
     <div className="hidden md:block w-64 bg-white shadow-md flex-shrink-0">
@@ -104,6 +138,8 @@ export function DesktopRoleSidebar({ role }: { role: UserRole }) {
           const Icon = icons[item.icon] || Home;
           const disabled = item.access?.[role] === "disabled";
           const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+          const badgeKey = Object.entries(BADGE_HREF_MAP).find(([, h]) => h === item.href)?.[0] as keyof SidebarBadges | undefined;
+          const count = badgeKey ? badges[badgeKey] : 0;
 
           if (disabled) {
             return (
@@ -132,6 +168,7 @@ export function DesktopRoleSidebar({ role }: { role: UserRole }) {
             >
               <Icon className="w-5 h-5 mr-3" aria-hidden="true" />
               {item.label}
+              <SidebarBadge count={count} />
             </Link>
           );
         })}
@@ -144,6 +181,7 @@ export default function Sidebar({ role }: { role?: UserRole } = {}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const badges = useSidebarBadges();
 
   useEffect(() => {
     if (open) {
@@ -190,7 +228,7 @@ export default function Sidebar({ role }: { role?: UserRole } = {}) {
                 <X className="w-5 h-5" aria-hidden="true" />
               </button>
             </div>
-            <NavLinks onClick={() => setOpen(false)} />
+            <NavLinks onClick={() => setOpen(false)} badges={badges} role={role} />
           </div>
         </>
       )}
@@ -203,7 +241,7 @@ export default function Sidebar({ role }: { role?: UserRole } = {}) {
           <div className="p-6">
             <h1 className="text-2xl font-bold text-gray-800">ZK Payroll</h1>
           </div>
-          <NavLinks />
+          <NavLinks badges={badges} role={role} />
         </div>
       )}
     </>
